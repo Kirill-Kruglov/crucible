@@ -12,6 +12,7 @@ dependencies = []
 [project.optional-dependencies]
 learn = ["torch>=2.0", "numpy>=1.20"]
 charts = ["matplotlib>=3.8"]
+llm = ["openai>=1.0"]  # optional: LLM proposer for `demo.self_modify --llm`
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

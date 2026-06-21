@@ -79,3 +79,25 @@ def run(edits: list[Edit] | None = None, start: dict | None = None):
         cand_metrics = evaluate_policy(candidate)
         decision, policy = try_edit(policy, edit)
         yield edit, decision, cand_metrics, policy
+
+
+def run_with_proposer(propose_fn, *, start: dict | None = None, rounds: int = 4):
+    """Drive the loop with a dynamic proposer.
+
+    `propose_fn(policy, reward, reproduce, history) -> Edit | None` is called each
+    round with the policy currently in effect and the history of past attempts
+    (list of (Edit, adopted: bool)); returning None ends the loop early.
+    Yields the same records as `run`.
+    """
+    policy = dict(start or DEFAULT_POLICY)
+    history: list[tuple[Edit, bool]] = []
+    for _ in range(rounds):
+        reward_metrics, integrity = evaluate_policy(policy)
+        edit = propose_fn(policy, reward_metrics["overall"], integrity, history)
+        if edit is None:
+            break
+        candidate = {**policy, **edit.delta}
+        cand_metrics = evaluate_policy(candidate)
+        decision, policy = try_edit(policy, edit)
+        history.append((edit, decision.passed))
+        yield edit, decision, cand_metrics, policy

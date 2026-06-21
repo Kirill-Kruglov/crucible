@@ -106,6 +106,22 @@ it can only keep changes that survive an integrity check it cannot game. The
 whole world (`crucible/selfmod/`) is a few small deterministic functions — the
 oracle, repro check and reward are real, nothing is hard-coded to a number.
 
+**Let a real model propose the edits** (optional, local):
+
+```bash
+pip install -e ".[llm]"           # adds the openai client
+# point at any OpenAI-compatible server (e.g. a local llama.cpp --port 8080)
+python -m demo.self_modify --llm http://127.0.0.1:8080/v1 --rounds 5
+```
+
+The model sees the current policy and reward and proposes one edit each round;
+rejected edits are fed back so it explores. Every proposal passes through an
+allowlist validator (only known policy fields/values survive — the analogue of
+the parent project's `proposals.py` allowlist) and then the gate. Runs are
+stochastic, but when the model reaches for the reward-hacking edit
+(`method=lookup`), the integrity gate reverts it while a reward-only gate would
+not. The LLM proposes; it never judges.
+
 ## Honesty notes (read this)
 
 This project is deliberately modest about what it claims, because that honesty
