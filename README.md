@@ -73,8 +73,38 @@ python -m demo.self_improve       # the loop, in seconds
 
 pip install -e ".[learn,charts]"  # optional: torch (learned router) + matplotlib
 python -m demo.self_improve --chart
-pytest                            # 17 deterministic tests, no torch needed
+python -m demo.self_modify        # self-edits judged by the same gate
+pytest                            # 24 deterministic tests, no torch needed
 ```
+
+## Second demo: an agent that may rewrite itself — but can't game itself
+
+```bash
+python -m demo.self_modify
+```
+
+```text
+start policy {'method': 'compute', 'verbosity': 3}
+      reward 0.700   reproduce 100%
+
+[edit 1] trim the explanation
+      reward 0.700 -> 0.900     reproduce 100% -> 100%
+      [gate] ADOPT
+
+[edit 2] answer from memory (skip the derivation)
+      reward 0.900 -> 1.000     reproduce 100% -> 0%
+      [gate] REVERT: integrity regression (reproduce rate -1.000)
+      (a reward-only gate would have ADOPTED this — reward Δ=+0.100)
+```
+
+A proposer suggests edits to the agent's own policy. Each edit is judged by the
+same gate, on reward **and** reproduce rate. The first edit is a real win and is
+kept. The second earns *more* reward by answering from memory instead of showing
+reproducible work — a reward-only gate would adopt it; the integrity gate reverts
+it. This is the bounded, honest form of "an agent rewrites itself to get better":
+it can only keep changes that survive an integrity check it cannot game. The
+whole world (`crucible/selfmod/`) is a few small deterministic functions — the
+oracle, repro check and reward are real, nothing is hard-coded to a number.
 
 ## Honesty notes (read this)
 
