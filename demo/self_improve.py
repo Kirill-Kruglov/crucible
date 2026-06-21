@@ -113,10 +113,17 @@ def main() -> None:
           f"      hack      {_pct(hack_integ)}  -> REJECTED on integrity ✓")
 
     if args.chart:
-        _write_chart(run, hack_reward, hack_integ, reproduce_rate(test), ms, args.chart)
+        _write_chart(run, reproduce_rate(test), args.chart)
 
 
-def _write_chart(run, hack_reward, hack_integ, base_integ, ms, path: Path) -> None:
+def _write_chart(run, base_integ: float | None, path: Path) -> None:
+    """Two panels, baseline vs the reward-maximizing champion.
+
+    The 'reward-hack' policy is omitted on purpose: in this sample it coincides
+    with the reward-maximizing champion (maximizing reward already selects the
+    non-reproducible strategies), so a third bar would just duplicate the second.
+    The story is the cross-panel tradeoff: reward up, reproducibility down.
+    """
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -125,27 +132,30 @@ def _write_chart(run, hack_reward, hack_integ, base_integ, ms, path: Path) -> No
         print("      (chart skipped: matplotlib not installed — pip install '.[charts]')")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.4, 3.4))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.6, 3.8))
 
-    labels = ["baseline", "champion\n(adopted)" if run.decision.passed else "champion",
-              "reward-hack\n(rejected)"]
-    rewards = [run.reward_baseline, run.reward_candidate, hack_reward["overall"]]
-    ax1.bar(labels, rewards, color=["#888", "#2a9d8f", "#e76f51"])
-    ax1.axhline(run.reward_baseline, color="#888", lw=1, ls="--", zorder=0)
-    ax1.set_title(f"Reward (held-out)   adopted {ms['adopt_rate']*100:.0f}% over {ms['n']} seeds")
+    labels = ["baseline", "champion\n(reward-max)"]
+    colors = ["#888", "#e76f51"]  # champion is rejected -> warning color
+
+    rewards = [run.reward_baseline, run.reward_candidate]
+    ax1.bar(labels, rewards, color=colors)
+    ax1.set_title("Reward (held-out) — goes up")
     ax1.set_ylabel("mean reward")
+    ax1.set_ylim(0, max(rewards) * 1.4)
     for i, v in enumerate(rewards):
-        ax1.text(i, v + 0.01, f"{v:.3f}", ha="center", fontsize=9)
+        ax1.text(i, v + max(rewards) * 0.02, f"{v:.3f}", ha="center", fontsize=10)
 
-    integ = [base_integ or 0, run.integrity_candidate or 0, hack_integ or 0]
-    ax2.bar(labels, integ, color=["#888", "#2a9d8f", "#e76f51"])
-    ax2.set_title("Integrity (reproduce rate) — what reward can't fake")
+    integ = [base_integ or 0.0, run.integrity_candidate or 0.0]
+    ax2.bar(labels, integ, color=colors)
+    ax2.set_title("Reproduce rate — goes down")
     ax2.set_ylabel("reproduce rate")
     ax2.set_ylim(0, 1)
     for i, v in enumerate(integ):
-        ax2.text(i, v + 0.02, f"{v*100:.0f}%", ha="center", fontsize=9)
+        ax2.text(i, v + 0.02, f"{v * 100:.0f}%", ha="center", fontsize=10)
 
-    fig.tight_layout()
+    fig.suptitle("Maximizing reward erodes reproducibility — the gate rejects it",
+                 fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(path, dpi=120)
     print(f"      chart -> {path}")
 

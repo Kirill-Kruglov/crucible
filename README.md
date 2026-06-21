@@ -32,13 +32,17 @@ $ python -m demo.self_improve
       integrity Δ -0.086 ± 0.045
 ```
 
-![Reward vs integrity: the gate judges both](docs/assets/before_after.png)
+![Maximizing reward erodes reproducibility, so the gate rejects it](docs/assets/before_after.png)
 
 Read what the demo is actually saying: the reward-maximizing routing **does**
 raise reward (+0.017 on average) — and it erodes reproducibility every single
 time (−0.086 ± 0.045 across 7 splits). A reward-only gate would adopt it. The
 integrity-aware gate rejects it on all 7 splits. **That refusal is the feature.**
-(The numbers come from a real but small, partly-synthetic log sample — see
+
+In this sample the reward-maximizing champion turns out to *be* the
+reward-hacking policy — maximizing reward already selects the non-reproducible
+strategies — which is exactly why it is rejected on integrity. (The numbers come
+from a real but small, partly-synthetic log sample — see
 [honesty notes](#honesty-notes-read-this); the mechanism is the point, not the
 exact figures.)
 
