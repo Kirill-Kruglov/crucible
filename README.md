@@ -15,36 +15,47 @@ LLM, no GPU, no network.
 
 ```text
 $ python -m demo.self_improve
-[1/5] loaded 200 episodes across 12 families
-[2/5] baseline mean reward (logged behavior): 0.422
-[3/5] proposed champion mean reward (est.): 0.494
-      [gate] PASS: improves aggregate without family regression (overall Δ=+0.072)
-[4/5] regression control candidate (est.): 0.286
-      [gate] REJECT: 4 family regression(s): analytics-analyst, ctf-analyst, gitea-wiki, kb-analyst
-[5/5] learned router accuracy: 0.75 over 5 strategies (off-policy — not a counterfactual guarantee)
+[1/5] loaded 200 episodes -> train 139 / held-out 61
+[2/5] baseline mean reward (held-out): 0.390
+[3/5] proposed champion:  in-sample 0.494 (optimistic)  ->  held-out 0.488
+      [gate] PASS: improves aggregate without family regression (overall Δ=+0.098)
+[4/5] regression control candidate (held-out): 0.310
+      [gate] REJECT: 3 family regression(s): analytics-analyst, kb-analyst, web-analyst
+[5/5] learned router accuracy: 0.69 over 5 strategies (off-policy — not a counterfactual guarantee)
 
-  reward (mean, estimated)
-    baseline   ██████████████··········  0.422
-    champion   ████████████████████····  0.494  (+0.072)  ADOPTED
-    regressed  ████····················  0.286  REJECTED by gate ✓
+  reward (mean) — gate judges the held-out estimate
+    baseline (held-out)   ███████████·············  0.390
+    champion in-sample    ████████████████████····  0.494  (optimistic)
+    champion held-out     ███████████████████·····  0.488  (+0.098)  ADOPTED
+    regressed (held-out)  ████····················  0.310  REJECTED by gate ✓
 ```
+
+![Champion gate judged on held-out, not in-sample](docs/assets/before_after.png)
+
+The policy is **proposed on a training split and judged on held-out episodes**.
+Note the gap between the in-sample estimate (0.494, optimistic) and the held-out
+estimate (0.488) — the gate trusts only the latter. A candidate that overfits the
+training logs would show a large gap and be caught here.
 
 ## The loop
 
 ```
-logged episodes  ──►  estimate a better per-family routing  ──►  champion gate
-   (replay)              (which strategy wins, per family)       (adopt / reject)
+logged episodes ─► split ─► propose on train ─► estimate held-out ─► champion gate
+   (replay)                  (best strategy/family)   (honest score)    (adopt / reject)
 ```
 
 1. **Replay** — each episode logs the strategy used, the task family, a feature
    vector, and the reward earned (`data/replay_sample.jsonl`, 200 anonymized
    records from real agent runs).
-2. **Propose** (`crucible/learning/routing.py`) — per task family, estimate which
-   strategy earns the most reward and propose routing each family to its best.
-3. **Gate** (`crucible/learning/gate.py`) — adopt the candidate only if it beats
-   the incumbent *and* regresses no family beyond tolerance. The same gate is
-   shown rejecting a deliberately-worse candidate.
-4. *(optional)* **Learn** — train the real `PolicyNetwork` (reward-weighted
+2. **Propose on train** (`crucible/learning/routing.py`) — on a training split,
+   per task family, find the strategy with the highest mean reward and propose
+   routing each family to its best.
+3. **Estimate held-out** — score that routing on episodes it never saw, falling
+   back to the status quo where the routing isn't represented (no invented gains).
+4. **Gate** (`crucible/learning/gate.py`) — adopt only if the held-out estimate
+   beats the incumbent *and* regresses no family beyond tolerance. The same gate
+   is shown rejecting a deliberately-worse candidate.
+5. *(optional)* **Learn** — train the real `PolicyNetwork` (reward-weighted
    classification of features → strategy) as a learned router. Reported as a
    sanity signal, not a guarantee (see honesty note below).
 

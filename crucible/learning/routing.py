@@ -15,6 +15,7 @@ gate (see gate.py) exists precisely because this estimate can be wrong.
 from __future__ import annotations
 
 import json
+import random
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean
@@ -57,37 +58,80 @@ def family_strategy_table(
     return table
 
 
+def propose_routing(
+    episodes: list[dict], *, min_support: int = 3, pick: str = "best"
+) -> dict[str, str]:
+    """Choose one strategy per family from these episodes.
+
+    pick="best"  -> each family's highest-mean-reward strategy
+    pick="worst" -> lowest (to demonstrate the gate rejecting a regression)
+
+    Families without enough support are omitted (no confident proposal), so the
+    routing never invents signal where the data is too thin.
+    """
+    table = family_strategy_table(episodes, min_support=min_support)
+    routing: dict[str, str] = {}
+    for fam, cells in table.items():
+        if not cells:
+            continue
+        ranked = sorted(cells.items(), key=lambda kv: kv[1][0])
+        chosen, _ = ranked[0] if pick == "worst" else ranked[-1]
+        routing[fam] = chosen
+    return routing
+
+
+def evaluate_routing(episodes: list[dict], routing: dict[str, str]) -> dict:
+    """Estimate the reward of a fixed routing on a (possibly held-out) set.
+
+    For each family routed to strategy `s`, the estimate is the mean reward of
+    the episodes in that family that actually used `s`. When the eval set has no
+    such episodes (the routing isn't represented here), we fall back to the
+    family's status-quo mean — we never fabricate a number. This is what makes
+    held-out evaluation honest: routings that don't generalize get no credit.
+    """
+    by_fam: dict[str, list[float]] = defaultdict(list)
+    by_fam_strat: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for e in episodes:
+        by_fam[e["task_type"]].append(e["reward"])
+        by_fam_strat[(e["task_type"], e["strategy_used"])].append(e["reward"])
+
+    per_family: dict[str, float] = {}
+    for fam, rewards in by_fam.items():
+        chosen = routing.get(fam)
+        cell = by_fam_strat.get((fam, chosen)) if chosen else None
+        per_family[fam] = mean(cell) if cell else mean(rewards)
+
+    total = sum(len(v) for v in by_fam.values())
+    overall = sum(per_family[f] * len(by_fam[f]) / total for f in per_family)
+    return {"overall": overall, "per_family": per_family}
+
+
 def propose_policy(
     episodes: list[dict], *, min_support: int = 3, pick: str = "best"
 ) -> tuple[dict[str, str], dict]:
-    """Propose a per-family strategy routing and estimate its metrics.
+    """In-sample convenience: propose a routing and score it on the same set.
 
-    pick="best"  -> route each family to its highest-mean-reward strategy
-    pick="worst" -> route to lowest (used to demonstrate the gate rejecting a regression)
-
-    Returns (routing, metrics). Families without enough support keep the
-    baseline (no confident proposal), so the estimate never invents signal.
+    Kept for simple callers; prefer split_by_family + propose_routing +
+    evaluate_routing for an honest (held-out) estimate.
     """
-    table = family_strategy_table(episodes, min_support=min_support)
-    base = baseline_metrics(episodes)
-    routing: dict[str, str] = {}
-    per_family: dict[str, float] = {}
+    routing = propose_routing(episodes, min_support=min_support, pick=pick)
+    return routing, evaluate_routing(episodes, routing)
 
-    for fam, base_r in base["per_family"].items():
-        cells = table.get(fam, {})
-        if not cells:
-            per_family[fam] = base_r  # no confident proposal -> keep status quo
-            continue
-        ranked = sorted(cells.items(), key=lambda kv: kv[1][0])
-        chosen, (chosen_r, _n) = ranked[0] if pick == "worst" else ranked[-1]
-        routing[fam] = chosen
-        per_family[fam] = chosen_r
 
-    # family weights = share of episodes in that family
-    counts: dict[str, int] = defaultdict(int)
+def split_by_family(
+    episodes: list[dict], *, test_frac: float = 0.3, seed: int = 0
+) -> tuple[list[dict], list[dict]]:
+    """Stratified train/test split that keeps each family's proportion."""
+    rng = random.Random(seed)
+    by_fam: dict[str, list[dict]] = defaultdict(list)
     for e in episodes:
-        counts[e["task_type"]] += 1
-    total = sum(counts.values())
-    overall = sum(per_family[f] * counts[f] / total for f in per_family)
-
-    return routing, {"overall": overall, "per_family": per_family}
+        by_fam[e["task_type"]].append(e)
+    train: list[dict] = []
+    test: list[dict] = []
+    for rows in by_fam.values():
+        rows = rows[:]
+        rng.shuffle(rows)
+        n_test = int(round(len(rows) * test_frac))
+        test.extend(rows[:n_test])
+        train.extend(rows[n_test:])
+    return train, test

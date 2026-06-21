@@ -24,9 +24,10 @@ from pathlib import Path
 
 from crucible.learning.routing import (
     baseline_metrics,
-    family_strategy_table,
+    evaluate_routing,
     load_episodes,
-    propose_policy,
+    propose_routing,
+    split_by_family,
 )
 from crucible.learning.gate import champion_gate
 
@@ -79,49 +80,58 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Offline self-improvement loop demo")
     ap.add_argument("--sample", type=Path, default=SAMPLE)
     ap.add_argument("--min-support", type=int, default=3)
-    ap.add_argument("--chart", action="store_true", help="write before/after PNG (needs matplotlib)")
+    ap.add_argument("--test-frac", type=float, default=0.3)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--chart", type=Path, nargs="?", const=REPO / "docs" / "assets" / "before_after.png",
+                    help="write before/after PNG (needs matplotlib)")
     args = ap.parse_args()
 
     episodes = load_episodes(args.sample)
-    base = baseline_metrics(episodes)
-    print(f"[1/5] loaded {len(episodes)} episodes across {len(base['per_family'])} families")
-    print(f"[2/5] baseline mean reward (logged behavior): {base['overall']:.3f}")
+    train, test = split_by_family(episodes, test_frac=args.test_frac, seed=args.seed)
+    base = baseline_metrics(test)  # status quo, measured on held-out episodes
+    print(f"[1/5] loaded {len(episodes)} episodes -> train {len(train)} / held-out {len(test)}")
+    print(f"[2/5] baseline mean reward (held-out): {base['overall']:.3f}")
 
-    # --- proposed champion: route each family to its empirical best strategy ---
-    routing, champ = propose_policy(episodes, min_support=args.min_support, pick="best")
+    # --- propose on TRAIN, then estimate honestly on the held-out set ---
+    routing = propose_routing(train, min_support=args.min_support, pick="best")
+    in_sample = evaluate_routing(train, routing)   # optimistic (fit the data it learned from)
+    champ = evaluate_routing(test, routing)        # what the gate actually trusts
     decision = champion_gate(base, champ)
-    print(f"[3/5] proposed champion mean reward (est.): {champ['overall']:.3f}")
+    print(f"[3/5] proposed champion:  in-sample {in_sample['overall']:.3f} (optimistic)"
+          f"  ->  held-out {champ['overall']:.3f}")
     print(f"      {decision.render()}")
     if routing:
         shown = ", ".join(f"{f}->{s}" for f, s in sorted(routing.items())[:4])
         print(f"      routing (sample): {shown}{' ...' if len(routing) > 4 else ''}")
 
     # --- regression control: the gate must reject a worse candidate ---
-    _, regressed = propose_policy(episodes, min_support=args.min_support, pick="worst")
+    bad_routing = propose_routing(train, min_support=args.min_support, pick="worst")
+    regressed = evaluate_routing(test, bad_routing)
     bad_decision = champion_gate(base, regressed)
-    print(f"[4/5] regression control candidate (est.): {regressed['overall']:.3f}")
+    print(f"[4/5] regression control candidate (held-out): {regressed['overall']:.3f}")
     print(f"      {bad_decision.render()}")
 
     # --- optional: train the real PolicyNetwork as a learned router ---
-    learned = _learned_router_accuracy(episodes)
+    learned = _learned_router_accuracy(train)
     line = learned if learned else "skipped (torch not installed)"
     print(f"[5/5] learned router accuracy: {line}")
 
     lo = min(base["overall"], regressed["overall"]) - 0.05
-    hi = max(champ["overall"], base["overall"]) + 0.05
+    hi = max(in_sample["overall"], champ["overall"], base["overall"]) + 0.05
     print()
-    print("  reward (mean, estimated)")
-    print(f"    baseline   {_bar(base['overall'], lo, hi)}  {base['overall']:.3f}")
-    print(f"    champion   {_bar(champ['overall'], lo, hi)}  {champ['overall']:.3f}"
-          f"  ({decision.overall_delta:+.3f})  {'ADOPTED' if decision.passed else 'rejected'}")
-    print(f"    regressed  {_bar(regressed['overall'], lo, hi)}  {regressed['overall']:.3f}"
+    print("  reward (mean) — gate judges the held-out estimate")
+    print(f"    baseline (held-out)   {_bar(base['overall'], lo, hi)}  {base['overall']:.3f}")
+    print(f"    champion in-sample    {_bar(in_sample['overall'], lo, hi)}  {in_sample['overall']:.3f}  (optimistic)")
+    print(f"    champion held-out     {_bar(champ['overall'], lo, hi)}  {champ['overall']:.3f}"
+          f"  ({decision.overall_delta:+.3f})  {'ADOPTED' if decision.passed else 'REJECTED'}")
+    print(f"    regressed (held-out)  {_bar(regressed['overall'], lo, hi)}  {regressed['overall']:.3f}"
           f"  REJECTED by gate ✓")
 
     if args.chart:
-        _write_chart(base, champ, regressed, decision.passed, REPO / "demo" / "out")
+        _write_chart(base, in_sample, champ, regressed, decision.passed, args.chart)
 
 
-def _write_chart(base, champ, regressed, adopted, out_dir: Path) -> None:
+def _write_chart(base, in_sample, champ, regressed, adopted, path: Path) -> None:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -129,19 +139,24 @@ def _write_chart(base, champ, regressed, adopted, out_dir: Path) -> None:
     except ImportError:
         print("      (chart skipped: matplotlib not installed — pip install '.[charts]')")
         return
-    out_dir.mkdir(parents=True, exist_ok=True)
-    labels = ["baseline", "champion\n(adopted)" if adopted else "champion\n(rejected)", "regressed\n(rejected)"]
-    vals = [base["overall"], champ["overall"], regressed["overall"]]
-    colors = ["#888", "#2a9d8f" if adopted else "#bbb", "#e76f51"]
-    fig, ax = plt.subplots(figsize=(5, 3.2))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    labels = [
+        "baseline\n(held-out)",
+        "champion\nin-sample",
+        "champion\nheld-out\n" + ("(adopted)" if adopted else "(rejected)"),
+        "regressed\n(rejected)",
+    ]
+    vals = [base["overall"], in_sample["overall"], champ["overall"], regressed["overall"]]
+    colors = ["#888", "#cdb4db", "#2a9d8f" if adopted else "#bbb", "#e76f51"]
+    fig, ax = plt.subplots(figsize=(6, 3.4))
     ax.bar(labels, vals, color=colors)
-    ax.set_ylabel("mean reward (estimated)")
-    ax.set_title("Champion gate: adopt gains, reject regressions")
+    ax.axhline(base["overall"], color="#888", lw=1, ls="--", zorder=0)
+    ax.set_ylabel("mean reward")
+    ax.set_title("Champion gate: judged on held-out, not in-sample")
     ax.set_ylim(0, max(vals) * 1.25)
     for i, v in enumerate(vals):
         ax.text(i, v + 0.01, f"{v:.3f}", ha="center", fontsize=9)
     fig.tight_layout()
-    path = out_dir / "before_after.png"
     fig.savefig(path, dpi=120)
     print(f"      chart -> {path}")
 

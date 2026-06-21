@@ -17,6 +17,11 @@ would have scored on an episode where strategy `x` was actually run. So:
 The champion gate is the response to this: it is conservative, blocks per-family
 regressions, and is meant to be run repeatedly with fresh logs.
 
+**Partly addressed:** the loop now proposes the routing on a training split and
+scores it on **held-out** episodes (`split_by_family` + `evaluate_routing`), so
+in-sample optimism no longer leaks into the gate's decision. The deeper off-policy
+confounding (no counterfactual rewards) remains — see below.
+
 ## 2. Not autonomous
 
 There is no loop here that lets an agent rewrite itself unsupervised. The cycle
@@ -40,7 +45,9 @@ evidence of generalization, and not used to make adoption decisions in this demo
 
 ## What would move this from "interesting" to "strong"
 
-- counterfactual / IPS-style off-policy evaluation instead of naive per-cell means;
-- held-out and multi-seed evaluation baked into the gate;
-- replacing the hash-derived inference features of the parent project with real
+- [x] held-out evaluation baked into the gate (done — train/test split);
+- [ ] multi-seed evaluation (average the gate verdict over several splits to
+  quantify variance, not just one split);
+- [ ] counterfactual / IPS-style off-policy evaluation instead of naive per-cell means;
+- [ ] replacing the hash-derived inference features of the parent project with real
   semantic features (length, task type, embeddings, KB-hit signals).
