@@ -1,63 +1,69 @@
 # crucible
 
-**A measurement-first self-improvement loop for LLM agents.**
+**A self-improvement loop for LLM agents that refuses to trust reward.**
 
-Most "self-improving agent" projects show a number going up. The hard part is
-not making a number go up — it's knowing whether the improvement is *real* and
-refusing the changes that aren't. `crucible` is the distilled core of that
-discipline: it learns a better policy from logged agent episodes, then puts the
-candidate through a **champion gate** that adopts genuine gains and **rejects
-regressions** — including the subtle ones that improve the average while quietly
-hurting a single task family.
+Most "self-improving agent" projects show a reward number going up. But reward
+can be gamed: an agent can satisfy a task's automated checker (the *oracle* that
+grants reward) without producing a result that actually holds up. A loop that
+optimizes reward alone will happily amplify those non-reproducible "wins".
 
-The headline demo runs in seconds, on the Python standard library alone — no
-LLM, no GPU, no network.
+`crucible` cross-checks every candidate policy against a second signal reward
+**cannot fake** — the **reproduce rate** (did oracle-passing episodes hold up on
+re-run?). Its champion gate adopts a change only if it improves reward *and*
+preserves both per-family performance and reproducibility. The headline demo
+runs in seconds, on the Python standard library alone — no LLM, no GPU, no network.
 
 ```text
 $ python -m demo.self_improve
-[1/5] loaded 200 episodes -> train 139 / held-out 61
-[2/5] baseline mean reward (held-out): 0.390
-[3/5] proposed champion:  in-sample 0.494 (optimistic)  ->  held-out 0.488
-      [gate] PASS: improves aggregate without family regression (overall Δ=+0.098)
-[4/5] regression control candidate (held-out): 0.310
-      [gate] REJECT: 3 family regression(s): analytics-analyst, kb-analyst, web-analyst
-[5/5] learned router accuracy: 0.69 over 5 strategies (off-policy — not a counterfactual guarantee)
-
-  reward (mean) — gate judges the held-out estimate
-    baseline (held-out)   ███████████·············  0.390
-    champion in-sample    ████████████████████····  0.494  (optimistic)
-    champion held-out     ███████████████████·····  0.488  (+0.098)  ADOPTED
-    regressed (held-out)  ████····················  0.310  REJECTED by gate ✓
+[1/4] in the logs: 69% of oracle-passing episodes did NOT reproduce
+      (reward still paid out — optimizing reward alone amplifies this)
+[2/4] champion (seed 0):
+      reward    0.481 -> 0.514 held-out  (in-sample 0.541)
+      integrity 36% -> 31% reproduce rate
+      [gate] REJECT: integrity regression (reproduce rate -0.051) (reward Δ=+0.033, integrity Δ=-0.051)
+[3/4] reward-hacking probe (chases reward into non-reproducible wins):
+      reward-only gate : ADOPT  (improves reward without family or integrity regression)
+      integrity gate   : REJECT  (integrity regression (reproduce rate -0.051))
+[4/4] multi-seed (7 splits): adopted 0% of the time
+      reward Δ    +0.017 ± 0.027
+      integrity Δ -0.086 ± 0.045
 ```
 
-![Champion gate judged on held-out, not in-sample](docs/assets/before_after.png)
+![Reward vs integrity: the gate judges both](docs/assets/before_after.png)
 
-The policy is **proposed on a training split and judged on held-out episodes**.
-Note the gap between the in-sample estimate (0.494, optimistic) and the held-out
-estimate (0.488) — the gate trusts only the latter. A candidate that overfits the
-training logs would show a large gap and be caught here.
+Read what the demo is actually saying: the reward-maximizing routing **does**
+raise reward (+0.017 on average) — and it erodes reproducibility every single
+time (−0.086 ± 0.045 across 7 splits). A reward-only gate would adopt it. The
+integrity-aware gate rejects it on all 7 splits. **That refusal is the feature.**
+(The numbers come from a real but small, partly-synthetic log sample — see
+[honesty notes](#honesty-notes-read-this); the mechanism is the point, not the
+exact figures.)
 
 ## The loop
 
 ```
-logged episodes ─► split ─► propose on train ─► estimate held-out ─► champion gate
-   (replay)                  (best strategy/family)   (honest score)    (adopt / reject)
+logged episodes ─► split ─► propose on train ─► held-out reward + integrity ─► gate
+   (replay)                  (best strategy/family)   (two orthogonal signals)   (adopt / reject)
 ```
 
-1. **Replay** — each episode logs the strategy used, the task family, a feature
-   vector, and the reward earned (`data/replay_sample.jsonl`, 200 anonymized
-   records from real agent runs).
+1. **Replay** (`data/replay_sample.jsonl`) — 204 anonymized records from real
+   agent runs: per episode the strategy used, task family, a feature vector, the
+   reward earned, and — crucially — whether the result was reproducible
+   (`oracle_pass` / `repro_pass`).
 2. **Propose on train** (`crucible/learning/routing.py`) — on a training split,
-   per task family, find the strategy with the highest mean reward and propose
-   routing each family to its best.
-3. **Estimate held-out** — score that routing on episodes it never saw, falling
-   back to the status quo where the routing isn't represented (no invented gains).
-4. **Gate** (`crucible/learning/gate.py`) — adopt only if the held-out estimate
-   beats the incumbent *and* regresses no family beyond tolerance. The same gate
-   is shown rejecting a deliberately-worse candidate.
-5. *(optional)* **Learn** — train the real `PolicyNetwork` (reward-weighted
-   classification of features → strategy) as a learned router. Reported as a
-   sanity signal, not a guarantee (see honesty note below).
+   per task family, route to the highest-mean-reward strategy.
+3. **Estimate held-out** — score that routing on episodes it never saw, on **two
+   axes**: reward (`routing.evaluate_routing`) and reproduce rate
+   (`integrity.routed_reproduce_rate`). No credit is invented where the data
+   can't support it.
+4. **Gate** (`crucible/learning/gate.py`) — adopt only if held-out reward
+   improves, no family regresses, **and** reproducibility is not eroded. The same
+   gate is shown rejecting a controlled reward-hacking policy.
+5. **Multi-seed** (`crucible/learning/loop.py`) — repeat over several stratified
+   splits so the verdict carries a variance, not a single lucky number.
+
+The optional `PolicyNetwork` learned router (the project's real model) can also
+be trained over the features; it is reported as a sanity signal, not a guarantee.
 
 ## Quickstart
 
@@ -67,7 +73,7 @@ python -m demo.self_improve       # the loop, in seconds
 
 pip install -e ".[learn,charts]"  # optional: torch (learned router) + matplotlib
 python -m demo.self_improve --chart
-pytest                            # 9 deterministic tests, no torch needed
+pytest                            # 17 deterministic tests, no torch needed
 ```
 
 ## Honesty notes (read this)

@@ -20,10 +20,12 @@ class GateDecision:
     overall_delta: float
     family_deltas: dict[str, float] = field(default_factory=dict)
     regressed_families: list[str] = field(default_factory=list)
+    integrity_delta: float | None = None
 
     def render(self) -> str:
         verdict = "PASS" if self.passed else "REJECT"
-        return f"[gate] {verdict}: {self.reason} (overall Δ={self.overall_delta:+.3f})"
+        extra = "" if self.integrity_delta is None else f", integrity Δ={self.integrity_delta:+.3f}"
+        return f"[gate] {verdict}: {self.reason} (reward Δ={self.overall_delta:+.3f}{extra})"
 
 
 def champion_gate(
@@ -32,17 +34,28 @@ def champion_gate(
     *,
     min_margin: float = 0.01,
     family_tolerance: float = 0.02,
+    baseline_integrity: float | None = None,
+    candidate_integrity: float | None = None,
+    integrity_tolerance: float = 0.03,
 ) -> GateDecision:
     """Compare candidate metrics against the incumbent baseline.
 
     `baseline` / `candidate` are dicts shaped like:
         {"overall": float, "per_family": {family: float}}
 
-    Accept iff:
-      1. overall reward improves by at least `min_margin`, and
-      2. no family regresses by more than `family_tolerance` below baseline.
+    Accept iff ALL hold:
+      1. overall reward improves by at least `min_margin`;
+      2. no family regresses by more than `family_tolerance`;
+      3. (when integrity is supplied) the reproduce rate does not drop by more
+         than `integrity_tolerance` — reward gains bought by eroding
+         reproducibility are rejected, even if every reward check passes.
     """
     overall_delta = candidate["overall"] - baseline["overall"]
+    integrity_delta = (
+        None
+        if baseline_integrity is None or candidate_integrity is None
+        else candidate_integrity - baseline_integrity
+    )
 
     family_deltas: dict[str, float] = {}
     regressed: list[str] = []
@@ -53,24 +66,20 @@ def champion_gate(
         if delta < -family_tolerance:
             regressed.append(fam)
 
-    if regressed:
+    def decide(passed: bool, reason: str) -> GateDecision:
         return GateDecision(
-            passed=False,
-            reason=f"{len(regressed)} family regression(s): {', '.join(sorted(regressed))}",
+            passed=passed,
+            reason=reason,
             overall_delta=overall_delta,
             family_deltas=family_deltas,
             regressed_families=regressed,
+            integrity_delta=integrity_delta,
         )
+
+    if integrity_delta is not None and integrity_delta < -integrity_tolerance:
+        return decide(False, f"integrity regression (reproduce rate {integrity_delta:+.3f})")
+    if regressed:
+        return decide(False, f"{len(regressed)} family regression(s): {', '.join(sorted(regressed))}")
     if overall_delta < min_margin:
-        return GateDecision(
-            passed=False,
-            reason=f"insufficient gain (need ≥{min_margin:+.3f})",
-            overall_delta=overall_delta,
-            family_deltas=family_deltas,
-        )
-    return GateDecision(
-        passed=True,
-        reason="improves aggregate without family regression",
-        overall_delta=overall_delta,
-        family_deltas=family_deltas,
-    )
+        return decide(False, f"insufficient reward gain (need ≥{min_margin:+.3f})")
+    return decide(True, "improves reward without family or integrity regression")
