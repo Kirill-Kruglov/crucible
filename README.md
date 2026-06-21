@@ -1,5 +1,8 @@
 # crucible
 
+[![CI](https://github.com/Kirill-Kruglov/crucible/actions/workflows/ci.yml/badge.svg)](https://github.com/Kirill-Kruglov/crucible/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **A self-improvement loop for LLM agents that refuses to trust reward.**
 
 Most "self-improving agent" projects show a reward number going up. But reward
